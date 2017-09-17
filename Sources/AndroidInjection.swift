@@ -21,16 +21,18 @@ func sockaddr_cast(_ p: UnsafeMutableRawPointer) -> UnsafeMutablePointer<sockadd
     return p.assumingMemoryBound(to: sockaddr.self)
 }
 
-protocol Kinded {
+protocol EntryInfo {
     var offset: Int32 { get }
     var kind: Int32 { get }
 }
 
 open class AndroidInjection {
 
+    static var injectionNumber = 0
+
     open class func connectAndRun(forMainThread: @escaping (@escaping () -> ()) -> ()) {
         if androidInjectionHost == "NNN.NNN.NNN.NNN" {
-            NSLog("Injection: androidInjectionHost has not been updated, try build again")
+            NSLog("Injection: AndroidInjectionHost.swift has not been updated, please build again.")
             return
         }
 
@@ -74,6 +76,7 @@ open class AndroidInjection {
         else {
             return loaderSocket
         }
+
         close(loaderSocket)
         return -1
     }
@@ -101,7 +104,7 @@ open class AndroidInjection {
         fflush(serverWrite)
 
         let serverRead = fdopen(serverSocket, "r")
-        var compressedLength: Int32 = 0, uncompressedLength: Int32 = 0, injectionNumber = 0
+        var compressedLength: Int32 = 0, uncompressedLength: Int32 = 0
 
         while fread(&compressedLength, 1, valueLength, serverRead) == valueLength &&
             fread(&uncompressedLength, 1, valueLength, serverRead) == valueLength,
@@ -126,8 +129,8 @@ open class AndroidInjection {
                     break
                 }
 
-                injectionNumber += 1
-                let libraryPath = NSTemporaryDirectory()+"injection\(injectionNumber).so"
+                AndroidInjection.injectionNumber += 1
+                let libraryPath = NSTemporaryDirectory()+"injection\(AndroidInjection.injectionNumber).so"
                 let libraryFILE = fopen(libraryPath, "w")
                 if libraryFILE == nil ||
                     fwrite(uncompressedBuffer, 1, Int(uncompressedLength), libraryFILE) != uncompressedLength {
@@ -176,7 +179,7 @@ open class AndroidInjection {
 
         var processed = [UnsafeMutablePointer<UInt8>: Bool]()
 
-        struct TypeEntry: Kinded {
+        struct TypeEntry: EntryInfo {
             let offset: Int32
             let kind: Int32
         }
@@ -185,7 +188,7 @@ open class AndroidInjection {
                 entrySymbol: ".swift2_type_metadata_start",
                 entryType: TypeEntry.self, processed: &processed)
 
-        struct Conformance: Kinded {
+        struct Conformance: EntryInfo {
             let skip1: Int32
             let offset: Int32
             let skip2: Int32
@@ -194,14 +197,14 @@ open class AndroidInjection {
 
         process(libHandle: libHandle, mainHandle: mainHandle,
                 entrySymbol: ".swift2_protocol_conformances_start",
-                entryType: Conformance.self, pointerOffset: pointerSize, processed: &processed)
+                entryType: Conformance.self, pointerOffset: MemoryLayout<Int32>.size, processed: &processed)
 
         return nil
     }
 
-    class func process<T: Kinded>(libHandle: UnsafeMutableRawPointer, mainHandle: UnsafeMutableRawPointer,
-                                  entrySymbol: String, entryType: T.Type, pointerOffset: Int = 0,
-                                  processed: inout [UnsafeMutablePointer<UInt8>: Bool] ) {
+    class func process<T: EntryInfo>(libHandle: UnsafeMutableRawPointer, mainHandle: UnsafeMutableRawPointer,
+                                     entrySymbol: String, entryType: T.Type, pointerOffset: Int = 0,
+                                     processed: inout [UnsafeMutablePointer<UInt8>: Bool] ) {
         guard let conformance = dlsym(libHandle, entrySymbol) else {
             NSLog("Could not locate \(entrySymbol) entries")
             return
