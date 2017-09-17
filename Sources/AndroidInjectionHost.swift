@@ -1,1 +1,2 @@
-let androidInjectionHost = "192.168.1.12"
+// Updated by ~/.gradle/scripts/swift-build.sh
+let androidInjectionHost = "NNN.NNN.NNN.NNN"

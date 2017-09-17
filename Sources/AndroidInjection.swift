@@ -29,91 +29,25 @@ protocol Kinded {
 open class AndroidInjection {
 
     open class func connectAndRun(forMainThread: @escaping (@escaping () -> ()) -> ()) {
+        if androidInjectionHost == "NNN.NNN.NNN.NNN" {
+            NSLog("Injection: androidInjectionHost has not been updated, try build again")
+            return
+        }
+
         DispatchQueue.global(qos: .background).async {
             var serverSocket: Int32 = -1
             while true {
-                serverSocket = connectTo(ipAddress: androidInjectionHost, INJECTION_APPNAME: "Injection")
-                if serverSocket >= 0 {
-                    break
+                while true {
+                    serverSocket = connectTo(ipAddress: androidInjectionHost, INJECTION_APPNAME: "Injection")
+                    if serverSocket >= 0 {
+                        break
+                    }
+                    Thread.sleep(forTimeInterval: 10)
                 }
+
+                service(serverSocket: serverSocket, forMainThread: forMainThread)
                 Thread.sleep(forTimeInterval: 10)
             }
-
-            let serverWrite = fdopen(serverSocket, "w")
-            NSLog("Injection: Connected to \(androidInjectionHost)")
-
-            var value: Int32 = Int32(INJECTION_PORT)
-            let valueLength = MemoryLayout.size(ofValue: value)
-            if serverWrite == nil || fwrite(&value, 1, valueLength, serverWrite) != valueLength {
-                NSLog("Injection: Could not write magic to %d %p: %s", serverSocket, serverWrite!, strerror(errno))
-                return
-            }
-
-            if !#file.withCString( {
-                filepath in
-                value = Int32(strlen(filepath))
-                return fwrite(&value, 1, valueLength, serverWrite) == valueLength &&
-                    fwrite(filepath, 1, Int(value), serverWrite) == value
-            } ) {
-                NSLog("Injection: Could not write filepath to %d %p: %s", serverSocket, serverWrite!, strerror(errno))
-                return
-            }
-            fflush(serverWrite)
-
-            var injectionNumber = 0
-            let serverRead = fdopen(serverSocket, "r")
-            var compressedLength: Int32 = 0, uncompressedLength: Int32 = 0
-
-            while fread(&compressedLength, 1, valueLength, serverRead) == valueLength &&
-                fread(&uncompressedLength, 1, valueLength, serverRead) == valueLength,
-                var compressedBuffer = malloc(Int(compressedLength)),
-                var uncompressedBuffer = malloc(Int(uncompressedLength)),
-                fread(compressedBuffer, 1, Int(compressedLength), serverRead) == compressedLength {
-                    defer {
-                        free(uncompressedBuffer)
-                        free(compressedBuffer)
-                    }
-                    if compressedLength == valueLength && uncompressedLength == valueLength {
-                        continue
-                    }
-
-                    NSLog("Injection: received %d/%d bytes", compressedLength, uncompressedLength)
-
-                    var destLen = uLongf(uncompressedLength)
-                    if uncompress(uncompressedBuffer.assumingMemoryBound(to: Bytef.self), &destLen,
-                                  compressedBuffer.assumingMemoryBound(to: Bytef.self),
-                                  uLong(compressedLength)) != Z_OK || destLen != uLongf(uncompressedLength) {
-                        NSLog("Injection: uncompression failure")
-                        break
-                    }
-
-                    injectionNumber += 1
-                    let libraryPath = NSTemporaryDirectory()+"injection\(injectionNumber).so"
-                    let libraryFILE = fopen(libraryPath, "w")
-                    if libraryFILE == nil || fwrite(uncompressedBuffer, 1, Int(uncompressedLength), libraryFILE) != uncompressedLength {
-                        NSLog("Injection: Could not write library file")
-                        break
-                    }
-                    fclose(libraryFILE)
-
-                    forMainThread( {
-                        NSLog("Injection: Wrote to \(libraryPath), injecting...")
-                        let error = loadAndInject(library: libraryPath)
-                        var status = Int32(error == nil ? 0 : strlen(error))
-                        if fwrite(&status, 1, valueLength, serverWrite) != valueLength {
-                            NSLog("Injection: Could not write status")
-                        }
-                        if error != nil && fwrite(error, 1, Int(status), serverWrite) != status {
-                            NSLog("Injection: Could not write error string")
-                        }
-                        fflush(serverWrite)
-                        NSLog("Injection complete.")
-                    } )
-            }
-
-            NSLog("Injection loop exits")
-            fclose(serverWrite)
-            fclose(serverRead)
         }
     }
 
@@ -140,9 +74,86 @@ open class AndroidInjection {
         else {
             return loaderSocket
         }
-
         close(loaderSocket)
         return -1
+    }
+
+    open class func service(serverSocket: Int32, forMainThread: @escaping (@escaping () -> ()) -> ()) {
+        NSLog("Injection: Connected to \(androidInjectionHost)")
+
+        let serverWrite = fdopen(serverSocket, "w")
+        var value: Int32 = Int32(INJECTION_PORT)
+        let valueLength = MemoryLayout.size(ofValue: value)
+        if serverWrite == nil || fwrite(&value, 1, valueLength, serverWrite) != valueLength {
+            NSLog("Injection: Could not write magic to %d %p: %s", serverSocket, serverWrite!, strerror(errno))
+            return
+        }
+
+        if !#file.withCString( {
+            filepath in
+            value = Int32(strlen(filepath))
+            return fwrite(&value, 1, valueLength, serverWrite) == valueLength &&
+                fwrite(filepath, 1, Int(value), serverWrite) == value
+        } ) {
+            NSLog("Injection: Could not write filepath to %d %p: %s", serverSocket, serverWrite!, strerror(errno))
+            return
+        }
+        fflush(serverWrite)
+
+        let serverRead = fdopen(serverSocket, "r")
+        var compressedLength: Int32 = 0, uncompressedLength: Int32 = 0, injectionNumber = 0
+
+        while fread(&compressedLength, 1, valueLength, serverRead) == valueLength &&
+            fread(&uncompressedLength, 1, valueLength, serverRead) == valueLength,
+            var compressedBuffer = malloc(Int(compressedLength)),
+            var uncompressedBuffer = malloc(Int(uncompressedLength)),
+            fread(compressedBuffer, 1, Int(compressedLength), serverRead) == compressedLength {
+                defer {
+                    free(compressedBuffer)
+                    free(uncompressedBuffer)
+                }
+                if compressedLength == valueLength && uncompressedLength == valueLength {
+                    continue
+                }
+
+                NSLog("Injection: received %d/%d bytes", compressedLength, uncompressedLength)
+
+                var destLen = uLongf(uncompressedLength)
+                if uncompress(uncompressedBuffer.assumingMemoryBound(to: Bytef.self), &destLen,
+                              compressedBuffer.assumingMemoryBound(to: Bytef.self),
+                              uLong(compressedLength)) != Z_OK || destLen != uLongf(uncompressedLength) {
+                    NSLog("Injection: uncompression failure")
+                    break
+                }
+
+                injectionNumber += 1
+                let libraryPath = NSTemporaryDirectory()+"injection\(injectionNumber).so"
+                let libraryFILE = fopen(libraryPath, "w")
+                if libraryFILE == nil ||
+                    fwrite(uncompressedBuffer, 1, Int(uncompressedLength), libraryFILE) != uncompressedLength {
+                    NSLog("Injection: Could not write library file")
+                    break
+                }
+                fclose(libraryFILE)
+
+                forMainThread( {
+                    NSLog("Injection: Wrote to \(libraryPath), injecting...")
+                    let error = loadAndInject(library: libraryPath)
+                    var status = Int32(error == nil ? 0 : strlen(error))
+                    if fwrite(&status, 1, valueLength, serverWrite) != valueLength {
+                        NSLog("Injection: Could not write status")
+                    }
+                    if error != nil && fwrite(error, 1, Int(status), serverWrite) != status {
+                        NSLog("Injection: Could not write error string")
+                    }
+                    fflush(serverWrite)
+                    NSLog("Injection complete.")
+                } )
+        }
+
+        NSLog("Injection loop exits")
+        fclose(serverWrite)
+        fclose(serverRead)
     }
 
     open class func loadAndInject(library: String) -> UnsafePointer<Int8>? {
@@ -247,4 +258,3 @@ open class AndroidInjection {
         memcpy(byteAddr(existingClass) + vtableOffset, byteAddr(classMetadata) + vtableOffset, vtableLength)
     }
 }
-
