@@ -30,10 +30,15 @@ open class AndroidInjection {
 
     open class func connectAndRun(forMainThread: @escaping (@escaping () -> ()) -> ()) {
         DispatchQueue.global(qos: .background).async {
-            let serverSocket = connectTo(ipAddress: androidInjectionHost, INJECTION_APPNAME: "Injection")
-            if serverSocket < 0 {
-                return
+            var serverSocket: Int32 = -1
+            while true {
+                serverSocket = connectTo(ipAddress: androidInjectionHost, INJECTION_APPNAME: "Injection")
+                if serverSocket >= 0 {
+                    break
+                }
+                Thread.sleep(forTimeInterval: 10)
             }
+
             let serverWrite = fdopen(serverSocket, "w")
             NSLog("Injection: Connected to \(androidInjectionHost)")
 
@@ -135,6 +140,7 @@ open class AndroidInjection {
         else {
             return loaderSocket
         }
+
         close(loaderSocket)
         return -1
     }
@@ -241,3 +247,4 @@ open class AndroidInjection {
         memcpy(byteAddr(existingClass) + vtableOffset, byteAddr(classMetadata) + vtableOffset, vtableLength)
     }
 }
+

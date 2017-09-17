@@ -1,1 +1,1 @@
-let androidInjectionHost = "192.168.1.14"
+let androidInjectionHost = "192.168.1.12"
