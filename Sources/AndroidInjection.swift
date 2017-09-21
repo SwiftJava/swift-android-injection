@@ -30,6 +30,10 @@ open class AndroidInjection {
 
     static var injectionNumber = 0
 
+    open class func connectAndRun() {
+        connectAndRun(forMainThread: { $0() } )
+    }
+
     open class func connectAndRun(forMainThread: @escaping (@escaping () -> ()) -> ()) {
         if androidInjectionHost == "NNN.NNN.NNN.NNN" {
             NSLog("Injection: AndroidInjectionHost.swift has not been updated, please build again.")
@@ -88,17 +92,17 @@ open class AndroidInjection {
         var value: Int32 = Int32(INJECTION_PORT)
         let valueLength = MemoryLayout.size(ofValue: value)
         if serverWrite == nil || fwrite(&value, 1, valueLength, serverWrite) != valueLength {
-            NSLog("Injection: Could not write magic to %d %p: %s", serverSocket, serverWrite!, strerror(errno))
+            NSLog("Injection: Could not write magic to %d: %s", serverSocket, strerror(errno))
             return
         }
 
         if !#file.withCString( {
             filepath in
-            value = Int32(strlen(filepath))
+            value = Int32(strlen(filepath)+1)
             return fwrite(&value, 1, valueLength, serverWrite) == valueLength &&
                 fwrite(filepath, 1, Int(value), serverWrite) == value
         } ) {
-            NSLog("Injection: Could not write filepath to %d %p: %s", serverSocket, serverWrite!, strerror(errno))
+            NSLog("Injection: Could not write filepath to %d: %s", serverSocket, strerror(errno))
             return
         }
         fflush(serverWrite)
@@ -109,45 +113,57 @@ open class AndroidInjection {
         while fread(&compressedLength, 1, valueLength, serverRead) == valueLength &&
             fread(&uncompressedLength, 1, valueLength, serverRead) == valueLength,
             var compressedBuffer = malloc(Int(compressedLength)),
-            var uncompressedBuffer = malloc(Int(uncompressedLength)),
-            fread(compressedBuffer, 1, Int(compressedLength), serverRead) == compressedLength {
+            var uncompressedBuffer = malloc(Int(uncompressedLength)) {
                 defer {
                     free(compressedBuffer)
                     free(uncompressedBuffer)
                 }
-                if compressedLength == valueLength && uncompressedLength == valueLength {
+
+                if compressedLength == 1 && uncompressedLength == 1 {
                     continue
+                }
+
+                if fread(compressedBuffer, 1, Int(compressedLength), serverRead) != compressedLength {
+                    NSLog("Injection: Could not read %d compressed bytes: %s",
+                          compressedLength, strerror(errno))
+                    break
                 }
 
                 NSLog("Injection: received %d/%d bytes", compressedLength, uncompressedLength)
 
-                var destLen = uLongf(uncompressedLength)
-                if uncompress(uncompressedBuffer.assumingMemoryBound(to: Bytef.self), &destLen,
-                              compressedBuffer.assumingMemoryBound(to: Bytef.self),
-                              uLong(compressedLength)) != Z_OK || destLen != uLongf(uncompressedLength) {
-                    NSLog("Injection: uncompression failure")
-                    break
+                let libraryPath: String
+                if uncompressedLength == 1 {
+                    libraryPath = String(cString: compressedBuffer.assumingMemoryBound(to: UInt8.self))
                 }
+                else {
+                    var destLen = uLongf(uncompressedLength)
+                    if uncompress(uncompressedBuffer.assumingMemoryBound(to: Bytef.self), &destLen,
+                                  compressedBuffer.assumingMemoryBound(to: Bytef.self),
+                                  uLong(compressedLength)) != Z_OK || destLen != uLongf(uncompressedLength) {
+                        NSLog("Injection: uncompression failure")
+                        break
+                    }
 
-                AndroidInjection.injectionNumber += 1
-                let libraryPath = NSTemporaryDirectory()+"injection\(AndroidInjection.injectionNumber).so"
-                let libraryFILE = fopen(libraryPath, "w")
-                if libraryFILE == nil ||
-                    fwrite(uncompressedBuffer, 1, Int(uncompressedLength), libraryFILE) != uncompressedLength {
-                    NSLog("Injection: Could not write library file")
-                    break
+                    AndroidInjection.injectionNumber += 1
+                    libraryPath = NSTemporaryDirectory()+"injection\(AndroidInjection.injectionNumber).so"
+                    let libraryFILE = fopen(libraryPath, "w")
+                    if libraryFILE == nil ||
+                        fwrite(uncompressedBuffer, 1, Int(uncompressedLength), libraryFILE) != uncompressedLength {
+                        NSLog("Injection: Could not write library file")
+                        break
+                    }
+                    fclose(libraryFILE)
                 }
-                fclose(libraryFILE)
 
                 forMainThread( {
-                    NSLog("Injection: Wrote to \(libraryPath), injecting...")
+                    NSLog("Injection: injecting \(libraryPath)...")
                     let error = loadAndInject(library: libraryPath)
-                    var status = Int32(error == nil ? 0 : strlen(error))
+                    var status = Int32(error == nil ? 0 : strlen(error)+1)
                     if fwrite(&status, 1, valueLength, serverWrite) != valueLength {
-                        NSLog("Injection: Could not write status")
+                        NSLog("Injection: Could not write status: %s", strerror(errno))
                     }
                     if error != nil && fwrite(error, 1, Int(status), serverWrite) != status {
-                        NSLog("Injection: Could not write error string")
+                        NSLog("Injection: Could not write error string: %s", strerror(errno))
                     }
                     fflush(serverWrite)
                     NSLog("Injection complete.")
@@ -256,7 +272,8 @@ open class AndroidInjection {
         }
 
         let vtableOffset = byteAddr(&existingClass.pointee.IVarDestroyer) - byteAddr(existingClass)
-        let vtableLength = Int(existingClass.pointee.ClassSize) - pointerSize * 2 - vtableOffset
+        let vtableLength = Int(existingClass.pointee.ClassSize -
+            existingClass.pointee.ClassAddressPoint) - vtableOffset
         NSLog("\(unsafeBitCast(classMetadata, to: AnyClass.self)), vtable length: \(vtableLength)")
         memcpy(byteAddr(existingClass) + vtableOffset, byteAddr(classMetadata) + vtableOffset, vtableLength)
     }
